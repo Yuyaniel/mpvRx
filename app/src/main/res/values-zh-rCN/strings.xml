@@ -962,6 +962,13 @@
   <string name="player_speed_locked">已锁定 %1$s 播放</string>
   <string name="player_speed_restored">已恢复%1$s播放</string>
   <string name="player_speed_exited">已退出倍数播放</string>
+  <string name="folder_add_to_playlist_title">添加文件夹到播放列表</string>
+  <string name="folder_add_to_playlist_label">播放列表名称</string>
+  <string name="folder_add_to_playlist_action">添加</string>
+  <string name="folder_add_to_playlist_in_progress">正在扫描文件夹…</string>
+  <string name="folder_add_to_playlist_done">已从\"%2$s\"添加 %1$d 个视频</string>
+  <string name="folder_add_to_playlist_empty">该文件夹内未找到可播放视频</string>
+  <string name="folder_add_to_playlist_failed">添加文件夹到播放列表失败：%1$s</string>
   <string name="player_next_dialog">下一句对白</string>
   <string name="player_previous_dialog">上一句对白</string>
   <string name="diagnostics_playback_decoder_header">播放与解码器</string>

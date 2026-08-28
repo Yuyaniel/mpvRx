@@ -12,7 +12,10 @@ package app.gyrolet.mpvrx.ui.browser.networkstreaming
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -26,14 +29,19 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -116,6 +124,7 @@ data class NetworkBrowserScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
     val isCurrentFolderBookmarked by viewModel.isCurrentFolderBookmarked.collectAsState()
+    val folderToPlaylistInProgress by viewModel.folderToPlaylistInProgress.collectAsState()
 
     // UI State
     val isRefreshing = remember { mutableStateOf(false) }
@@ -123,6 +132,21 @@ data class NetworkBrowserScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var isSearching by rememberSaveable { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var pendingFolder by rememberSaveable(
+      stateSaver = androidx.compose.runtime.saveable.Saver(
+        save = { it?.path },
+        restore = { path ->
+          files.firstOrNull { f -> f.path == path && f.isDirectory }
+        },
+      ),
+    ) { mutableStateOf<NetworkFile?>(null) }
+    var pendingFolderName by rememberSaveable { mutableStateOf("") }
+
+    val addedCountTemplate = stringResource(R.string.folder_add_to_playlist_done)
+    val emptyMessageTemplate = stringResource(R.string.folder_add_to_playlist_empty)
+    val failureMessageTemplate = stringResource(R.string.folder_add_to_playlist_failed)
+    val inProgressLabel = stringResource(R.string.folder_add_to_playlist_in_progress)
 
     // Load files when connectionId or currentPath changes
     LaunchedEffect(connectionId, currentPath) {
@@ -132,6 +156,34 @@ data class NetworkBrowserScreen(
     LaunchedEffect(viewModel) {
       viewModel.importedPlaylistId.collect { playlistId ->
         backstack.add(PlaylistDetailScreen(playlistId))
+      }
+    }
+
+    LaunchedEffect(viewModel) {
+      viewModel.folderToPlaylistOutcome.collect { outcome ->
+        when (outcome) {
+          is FolderToPlaylistOutcome.Success -> {
+            pendingFolder = null
+            snackbarHostState.showSnackbar(
+              message = String.format(addedCountTemplate, outcome.addedCount, outcome.folderName),
+              actionLabel = "Open",
+            ).let { result ->
+              if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                backstack.add(PlaylistDetailScreen(outcome.playlistId))
+              }
+            }
+          }
+          is FolderToPlaylistOutcome.Empty -> {
+            pendingFolder = null
+            snackbarHostState.showSnackbar(message = emptyMessageTemplate)
+          }
+          is FolderToPlaylistOutcome.Failure -> {
+            pendingFolder = null
+            snackbarHostState.showSnackbar(
+              message = String.format(failureMessageTemplate, outcome.message),
+            )
+          }
+        }
       }
     }
 
@@ -145,6 +197,7 @@ data class NetworkBrowserScreen(
     }
 
     Scaffold(
+      snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
       topBar = {
         if (isSearching) {
           SearchBar(
@@ -248,6 +301,12 @@ data class NetworkBrowserScreen(
             ),
           )
         },
+        onFolderLongClick = { folder ->
+          if (!folderToPlaylistInProgress) {
+            pendingFolder = folder
+            pendingFolderName = folder.name
+          }
+        },
         onVideoClick = { video ->
           viewModel.openMedia(video)
         },
@@ -258,6 +317,66 @@ data class NetworkBrowserScreen(
         isOpen = sortDialogOpen.value,
         onDismiss = { sortDialogOpen.value = false },
       )
+
+      val pending = pendingFolder
+      if (pending != null) {
+        AlertDialog(
+          onDismissRequest = { if (!folderToPlaylistInProgress) pendingFolder = null },
+          title = { Text(stringResource(R.string.folder_add_to_playlist_title)) },
+          text = {
+            Column {
+              Text(
+                text = pending.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Spacer(modifier = Modifier.size(12.dp))
+              OutlinedTextField(
+                value = pendingFolderName,
+                onValueChange = { pendingFolderName = it },
+                singleLine = true,
+                enabled = !folderToPlaylistInProgress,
+                label = { Text(stringResource(R.string.folder_add_to_playlist_label)) },
+              )
+              if (folderToPlaylistInProgress) {
+                Spacer(modifier = Modifier.size(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                  )
+                  Spacer(modifier = Modifier.size(8.dp))
+                  Text(
+                    text = inProgressLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                  )
+                }
+              }
+            }
+          },
+          confirmButton = {
+            TextButton(
+              onClick = {
+                val target = pending
+                val name = pendingFolderName
+                pendingFolder = null
+                viewModel.addFolderToPlaylist(target, name)
+              },
+              enabled = !folderToPlaylistInProgress && pendingFolderName.isNotBlank(),
+            ) {
+              Text(stringResource(R.string.folder_add_to_playlist_action))
+            }
+          },
+          dismissButton = {
+            TextButton(
+              onClick = { pendingFolder = null },
+              enabled = !folderToPlaylistInProgress,
+            ) {
+              Text(stringResource(R.string.generic_cancel))
+            }
+          },
+        )
+      }
     }
   }
 }
@@ -313,6 +432,7 @@ private fun NetworkBrowserContent(
   searchQuery: String,
   onRefresh: suspend () -> Unit,
   onFolderClick: (NetworkFile) -> Unit,
+  onFolderLongClick: (NetworkFile) -> Unit,
   onVideoClick: (NetworkFile) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -474,6 +594,7 @@ private fun NetworkBrowserContent(
                   NetworkFolderCard(
                     file = folder,
                     onClick = { onFolderClick(folder) },
+                    onLongClick = { onFolderLongClick(folder) },
                     isGridMode = true,
                     modifier = Modifier,
                   )
@@ -533,6 +654,7 @@ private fun NetworkBrowserContent(
                   NetworkFolderCard(
                     file = folder,
                     onClick = { onFolderClick(folder) },
+                    onLongClick = { onFolderLongClick(folder) },
                     isGridMode = false,
                     modifier = Modifier,
                   )

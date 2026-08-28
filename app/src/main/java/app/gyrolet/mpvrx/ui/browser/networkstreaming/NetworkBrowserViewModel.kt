@@ -94,6 +94,12 @@ class NetworkBrowserViewModel(
   private val _importedPlaylistId = MutableSharedFlow<Int>()
   val importedPlaylistId: SharedFlow<Int> = _importedPlaylistId.asSharedFlow()
 
+  private val _folderToPlaylistOutcome = MutableSharedFlow<FolderToPlaylistOutcome>(extraBufferCapacity = 4)
+  val folderToPlaylistOutcome: SharedFlow<FolderToPlaylistOutcome> = _folderToPlaylistOutcome.asSharedFlow()
+
+  private val _folderToPlaylistInProgress = MutableStateFlow(false)
+  val folderToPlaylistInProgress: StateFlow<Boolean> = _folderToPlaylistInProgress.asStateFlow()
+
   /** Whether the currently browsed folder is saved as a WebDAV folder bookmark. */
   val isCurrentFolderBookmarked: StateFlow<Boolean> =
     webDavBookmarkRepository
@@ -200,6 +206,93 @@ class NetworkBrowserViewModel(
         _error.value = e.message ?: "Unknown error"
       }
     }
+  }
+
+  /**
+   * Recursively scan [root] (and its sub-folders) and add every playable video to a new
+   * playlist named [playlistName]. Existing playlist with the same name is reused.
+   * Outcome is reported via [folderToPlaylistOutcome]; UI shows snackbar/result.
+   */
+  fun addFolderToPlaylist(
+    root: NetworkFile,
+    playlistName: String,
+  ) {
+    if (_folderToPlaylistInProgress.value) return
+    val name = playlistName.trim().ifBlank { root.name }
+    viewModelScope.launch {
+      _folderToPlaylistInProgress.value = true
+      try {
+        val connection =
+          repository.getConnectionById(connectionId)
+            ?: throw IllegalStateException("Connection not found")
+        val collected =
+          collectPlayableVideosRecursive(connection, root.path)
+        if (collected.isEmpty()) {
+          _folderToPlaylistOutcome.emit(FolderToPlaylistOutcome.Empty(root.name))
+          return@launch
+        }
+        val playlistId = playlistRepository.createPlaylist(name).toInt()
+        val items =
+          collected.map { video ->
+            NetworkPlaybackUri.create(connection.id, video.path) to video.name
+          }
+        playlistRepository.addItemsToPlaylist(playlistId, items)
+        _folderToPlaylistOutcome.emit(
+          FolderToPlaylistOutcome.Success(
+            playlistId = playlistId,
+            playlistName = name,
+            folderName = root.name,
+            addedCount = collected.size,
+          ),
+        )
+      } catch (cancellation: CancellationException) {
+        throw cancellation
+      } catch (e: Exception) {
+        Log.e(TAG, "Failed to add folder to playlist", e)
+        _folderToPlaylistOutcome.emit(FolderToPlaylistOutcome.Failure(root.name, e.message ?: "Unknown error"))
+      } finally {
+        _folderToPlaylistInProgress.value = false
+      }
+    }
+  }
+
+  /**
+   * BFS over the folder tree rooted at [path]. Returns up to [MAX_FOLDER_SCAN_VIDEOS] playable
+   * videos to keep the scan bounded; depth is clamped to [MAX_FOLDER_SCAN_DEPTH] to avoid
+   * pathological recursion (e.g. cyclic symlinks).
+   */
+  private suspend fun collectPlayableVideosRecursive(
+    connection: NetworkConnection,
+    path: String,
+  ): List<NetworkFile> {
+    val queue: ArrayDeque<Pair<String, Int>> = ArrayDeque()
+    queue.addLast(path to 0)
+    val collected = mutableListOf<NetworkFile>()
+    val seen = HashSet<String>()
+    seen.add(path)
+    while (queue.isNotEmpty() && collected.size < MAX_FOLDER_SCAN_VIDEOS) {
+      val (currentPath, depth) = queue.removeFirst()
+      if (depth > MAX_FOLDER_SCAN_DEPTH) continue
+      val listing =
+        repository
+          .listFiles(connection, currentPath)
+          .getOrElse { error ->
+              Log.w(TAG, "Folder scan failed at $currentPath: ${error.message}")
+              continue
+            }
+      for (entry in listing) {
+        if (entry.isDirectory) {
+          if (entry.path !in seen) {
+            seen.add(entry.path)
+            queue.addLast(entry.path to depth + 1)
+          }
+        } else if (entry.isPlayableNetworkVideo()) {
+          collected.add(entry)
+          if (collected.size >= MAX_FOLDER_SCAN_VIDEOS) break
+        }
+      }
+    }
+    return collected
   }
 
   private suspend fun openM3uFile(
@@ -365,6 +458,8 @@ class NetworkBrowserViewModel(
 
   companion object {
     private const val TAG = "NetworkBrowserVM"
+    private const val MAX_FOLDER_SCAN_DEPTH = 4
+    private const val MAX_FOLDER_SCAN_VIDEOS = 1000
 
     fun factory(
       application: Application,
@@ -377,6 +472,23 @@ class NetworkBrowserViewModel(
         }
       }
   }
+}
+
+/** Outcome reported by [NetworkBrowserViewModel.addFolderToPlaylist]. */
+sealed interface FolderToPlaylistOutcome {
+  data class Success(
+    val playlistId: Int,
+    val playlistName: String,
+    val folderName: String,
+    val addedCount: Int,
+  ) : FolderToPlaylistOutcome
+
+  data class Empty(val folderName: String) : FolderToPlaylistOutcome
+
+  data class Failure(
+    val folderName: String,
+    val message: String,
+  ) : FolderToPlaylistOutcome
 }
 
 /** Display name for a bookmarked WebDAV folder path, e.g. "/movies/anime/" -> "anime". */

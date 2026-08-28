@@ -1071,6 +1071,13 @@
   <string name="player_speed_locked">Locked %1$s playback</string>
   <string name="player_speed_restored">Restored %1$s playback</string>
   <string name="player_speed_exited">Exited multiplier playback</string>
+  <string name="folder_add_to_playlist_title">Add folder to playlist</string>
+  <string name="folder_add_to_playlist_label">Playlist name</string>
+  <string name="folder_add_to_playlist_action">Add</string>
+  <string name="folder_add_to_playlist_in_progress">Scanning folder…</string>
+  <string name="folder_add_to_playlist_done">Added %1$d videos from \"%2$s\"</string>
+  <string name="folder_add_to_playlist_empty">No playable videos found in this folder</string>
+  <string name="folder_add_to_playlist_failed">Failed to add folder to playlist: %1$s</string>
   <string name="player_next_dialog">Next Dialog</string>
   <string name="player_previous_dialog">Previous Dialog</string>
   <string name="diagnostics_playback_decoder_header">PLAYBACK &amp; DECODER</string>
