@@ -1,0 +1,120 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
+
+package app.gyrolet.mpvrx.ui.browser.cards
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import app.gyrolet.mpvrx.R
+import app.gyrolet.mpvrx.database.entities.WebDavFolderBookmarkEntity
+import app.gyrolet.mpvrx.preferences.AppearancePreferences
+import app.gyrolet.mpvrx.preferences.preference.collectAsState
+import app.gyrolet.mpvrx.ui.icons.Icon
+import app.gyrolet.mpvrx.ui.icons.Icons
+import app.gyrolet.mpvrx.ui.theme.AppShapeScale
+import org.koin.compose.koinInject
+
+/** Horizontal card for a bookmarked WebDAV folder in the Network tab favorites section. */
+@Composable
+fun WebDavBookmarkCard(
+  bookmark: WebDavFolderBookmarkEntity,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+  onLongClick: (() -> Unit)? = null,
+) {
+  val appearancePreferences = koinInject<AppearancePreferences>()
+  val unlimitedNameLines by appearancePreferences.unlimitedNameLines.collectAsState()
+  val maxLines = if (unlimitedNameLines) Int.MAX_VALUE else 2
+  val sourceLabel = rememberBookmarkSourceLabel(bookmark.connectionName, bookmark.folderName)
+
+  Card(
+    modifier =
+      modifier
+        .fillMaxWidth()
+        .combinedClickable(
+          onClick = onClick,
+          onLongClick = onLongClick,
+        ),
+    shape = AppShapeScale.large,
+    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+  ) {
+    Row(
+      modifier =
+        Modifier
+          .fillMaxWidth()
+          .clip(AppShapeScale.large)
+          .background(MaterialTheme.colorScheme.surfaceContainer)
+          .padding(16.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Box(
+        modifier =
+          Modifier
+            .size(48.dp)
+            .clip(AppShapeScale.medium)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(
+          imageVector = Icons.RoundedFilled.Folder,
+          contentDescription = stringResource(R.string.ui_folder),
+          modifier = Modifier.size(32.dp),
+          tint = MaterialTheme.colorScheme.secondary,
+        )
+      }
+      Spacer(modifier = Modifier.width(16.dp))
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = bookmark.folderName,
+          style = MaterialTheme.typography.titleMedium,
+          fontWeight = FontWeight.Medium,
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = maxLines,
+          overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+          text = sourceLabel,
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun rememberBookmarkSourceLabel(connectionName: String, folderName: String): String =
+  remember(connectionName, folderName) {
+    listOf(connectionName.trim(), folderName.trim()).filter { it.isNotBlank() }.joinToString("·")
+  }

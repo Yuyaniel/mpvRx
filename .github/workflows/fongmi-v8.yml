@@ -1,0 +1,125 @@
+name: Fongmi v8 APK
+
+# Fast single-target build: only the fongmi flavor, only the arm64-v8a (v8) ABI.
+# Skips standard/noVulkan flavors and all other ABIs to save runner time.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/webdav-folder-bookmark
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'fastlane/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TARGET_ABI: arm64-v8a
+
+jobs:
+  build-fongmi-v8:
+    name: Build fongmi arm64-v8a release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # BuildConfig.GIT_COUNT relies on the real repository history.
+          fetch-depth: 0
+
+      - name: Generate build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Build fongmi arm64-v8a release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew assembleFongmiRelease \
+            -PtargetAbi="$TARGET_ABI" \
+            --stacktrace --no-daemon --max-workers=2
+
+      - name: Verify expected APK output
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="app/build/outputs/apk/fongmi/release"
+          echo "APKs produced:"
+          find "$release_dir" -maxdepth 1 -type f -name '*.apk' -printf '%f\n' | sort || true
+          if ! compgen -G "$release_dir/app-fongmi-$TARGET_ABI-release*.apk" >/dev/null; then
+            echo "No fongmi $TARGET_ABI release APK found in $release_dir"
+            exit 1
+          fi
+          if find "$release_dir" -maxdepth 1 -type f -name 'app-fongmi-*-release*.apk' ! -name "app-fongmi-$TARGET_ABI-release*.apk" | grep -q .; then
+            echo "Unexpected extra fongmi APK flavors were produced"
+            exit 1
+          fi
+
+      - name: Sign APK when signing secrets are available
+        shell: bash
+        run: |
+          set -euo pipefail
+          apksigner="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          test -x "$apksigner"
+
+          if [[ -z "${{ secrets.SIGNING_KEYSTORE }}" ]]; then
+            echo "SIGNING_KEYSTORE is unavailable; keeping the CI APK unsigned."
+            exit 0
+          fi
+
+          if [[ -z "${{ secrets.SIGNING_KEY_ALIAS }}" || -z "${{ secrets.SIGNING_STORE_PASSWORD }}" || -z "${{ secrets.KEY_PASSWORD }}" ]]; then
+            echo "SIGNING_KEYSTORE exists but one or more required signing secrets are missing."
+            exit 1
+          fi
+
+          printf '%s' "${{ secrets.SIGNING_KEYSTORE }}" | base64 --decode > release.keystore
+          trap 'rm -f release.keystore' EXIT
+
+          release_dir="app/build/outputs/apk/fongmi/release"
+          unsigned="$release_dir/app-fongmi-$TARGET_ABI-release-unsigned.apk"
+          signed="$release_dir/app-fongmi-$TARGET_ABI-release.apk"
+
+          if [[ ! -f "$unsigned" ]]; then
+            echo "Missing expected fongmi $TARGET_ABI APK: $unsigned"
+            exit 1
+          fi
+
+          "$apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "${{ secrets.SIGNING_KEY_ALIAS }}" \
+            --ks-pass "pass:${{ secrets.SIGNING_STORE_PASSWORD }}" \
+            --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+            --out "$signed" \
+            "$unsigned"
+          "$apksigner" verify --verbose "$signed"
+          rm -f "$unsigned"
+
+      - name: Upload fongmi arm64-v8a APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-fongmi-arm64-v8a-release-${{ env.SHORT_SHA }}
+          path: app/build/outputs/apk/fongmi/release/app-fongmi-arm64-v8a-release*.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
