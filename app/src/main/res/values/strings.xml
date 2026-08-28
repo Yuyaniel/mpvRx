@@ -1067,6 +1067,7 @@
   <string name="player_speed_lock_hint">Swipe up to lock %1$s playback</string>
   <string name="player_speed_exit_hint">Swipe down to exit %1$s playback</string>
   <string name="player_speed_release_hint">Release to exit %1$s playback</string>
+  <string name="player_speed_lock_release_hint">Release to lock %1$s playback</string>
   <string name="player_speed_locked">Locked %1$s playback</string>
   <string name="player_speed_restored">Restored %1$s playback</string>
   <string name="player_speed_exited">Exited multiplier playback</string>

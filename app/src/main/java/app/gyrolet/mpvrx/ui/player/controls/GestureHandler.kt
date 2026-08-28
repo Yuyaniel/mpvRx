@@ -97,6 +97,12 @@ import kotlin.math.sqrt
 
 private val holdSpeedPresets = listOf(0.5f, 1f, 1.5f, 2f, 2.5f, 3f, 3.5f, 4f)
 private const val SPEED_HOLD_INTENT_THRESHOLD_MS = 250L
+// Long-press vertical swipe-up/down lock/exit threshold, in dp. The actual pixel
+// threshold is computed dynamically as 22% of the player height, clamped to this
+// inclusive range so it works on both tiny phones and large tablets.
+private const val SPEED_SWIPE_THRESHOLD_MIN_DP = 48f
+private const val SPEED_SWIPE_THRESHOLD_MAX_DP = 112f
+private const val SPEED_SWIPE_THRESHOLD_HEIGHT_RATIO = 0.22f
 
 private enum class GestureOwner {
   SPEED,
@@ -522,6 +528,14 @@ fun GestureHandler(
             val down = awaitFirstDown(requireUnconsumed = false)
             beginGesture(down.id.value, down.uptimeMillis)
             val startPosition = down.position
+            // Dynamic swipe threshold: 22% of the player height, clamped to
+            // [48.dp, 112.dp] so it scales with screen size but stays within a
+            // reasonable range.
+            val swipeThresholdMinPx = with(density) { SPEED_SWIPE_THRESHOLD_MIN_DP.dp.toPx() }
+            val swipeThresholdMaxPx = with(density) { SPEED_SWIPE_THRESHOLD_MAX_DP.dp.toPx() }
+            val speedSwipeThresholdPx =
+              (size.height * SPEED_SWIPE_THRESHOLD_HEIGHT_RATIO)
+                .coerceIn(swipeThresholdMinPx, swipeThresholdMaxPx)
             val isVerticalGestureDeadZone =
               startPosition.y <= topGestureDeadZonePx ||
                 startPosition.y >= size.height - bottomGestureDeadZonePx
@@ -597,15 +611,24 @@ fun GestureHandler(
                       longPressTriggeredDuringTouch = true
                       haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                       originalSpeed = playbackSpeed ?: 1f
-                      // Do NOT ramp the speed yet — the multiplier only commits when the
-                      // user swipes up. Long-press alone just opens a gesture mode and
-                      // shows a guidance hint.
-                      val targetSpeed = nearestHoldSpeedPreset(multipleSpeedGesture)
+                      val alreadyBoosted = originalSpeed > 1.001f
+                      val targetSpeed =
+                        if (alreadyBoosted) {
+                          // Already in the multiplier: keep the current speed so the user
+                          // can swipe down to exit without an unexpected speed jump.
+                          originalSpeed
+                        } else {
+                          nearestHoldSpeedPreset(multipleSpeedGesture)
+                        }
                       isDynamicSpeedControlActive = true
                       hasSwipedEnough = false
                       dynamicSpeedStartX = startPosition.x
                       dynamicSpeedStartValue = targetSpeed
                       lastAppliedSpeed = targetSpeed
+                      // Immediately ramp playback to the multiplier speed on long-press so
+                      // the user feels the boost right away. On release the speed reverts to
+                      // the original value unless the user swiped up to lock the multiplier.
+                      PlaybackSession.setPropertyFloat("speed", targetSpeed)
                       // Persist a guidance hint until the finger is released.
                       // - At the original speed, hint to swipe up to enter the multiplier.
                       // - At an already accelerated (multiplier) speed, hint to swipe
@@ -691,11 +714,12 @@ fun GestureHandler(
                             isDynamicSpeedControlActive &&
                             gestureOwner == GestureOwner.SPEED
                           ) {
+                            val verticalSwipedEnough = abs(deltaY) >= speedSwipeThresholdPx
                             gestureType =
                               when {
                                 abs(deltaX) > abs(deltaY) -> "speed_control"
-                                deltaY < 0f -> "speed_lock"
-                                deltaY > 0f -> "speed_exit"
+                                verticalSwipedEnough && deltaY < 0f -> "speed_lock"
+                                verticalSwipedEnough && deltaY > 0f -> "speed_exit"
                                 else -> null
                               }
                           } else {
@@ -754,10 +778,10 @@ fun GestureHandler(
                         change.consume()
                       }
                       "speed_control" -> {
-                        // Horizontal speed control is only meaningful after entering the
-                        // multiplier (swipe up) or when playback is already in a locked
-                        // multiplier state from a previous gesture.
-                        val inMultiplierState = speedEntered || originalSpeed > 1.001f
+                        // Horizontal speed control adjusts the multiplier that is already
+                        // active from the long-press boost (or from a previously locked
+                        // multiplier state).
+                        val inMultiplierState = speedEntered || originalSpeed > 1.001f || isDynamicSpeedControlActive
                         if (
                           isLongPressing &&
                           isDynamicSpeedControlActive &&
@@ -809,30 +833,29 @@ fun GestureHandler(
                             speedLocked = true
                             speedEntered = true
                             lockedSpeedValue = lastAppliedSpeed
-                            // Ramp the speed into the multiplier so the user feels the
-                            // transition during the swipe. On release the speed is
-                            // re-asserted (final value); any unfinished ramp steps are
-                            // short and will be overwritten harmlessly.
-                            val startSpeed = originalSpeed
-                            val endSpeed = lockedSpeedValue
-                            val steps = 5
-                            val stepDelay = 16L
-                            coroutineScope.launch {
-                              for (i in 1..steps) {
-                                val t = i.toFloat() / steps
-                                val intermediate = startSpeed + (endSpeed - startSpeed) * t
-                                PlaybackSession.setPropertyFloat("speed", intermediate)
-                                if (i < steps) delay(stepDelay)
-                              }
-                            }
+                            // The long-press already ramped playback to the multiplier, so
+                            // locking just re-asserts the current speed. Any horizontal
+                            // adjustment made while holding is reflected in lastAppliedSpeed.
+                            PlaybackSession.setPropertyFloat("speed", lockedSpeedValue)
                             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            // Show a persistent hint so the user can confirm the swipe-up
+                            // was recognized; the lock commits on release.
+                            viewModel.playerUpdate.update {
+                              PlayerUpdates.ShowTextPersistent(
+                                context.getString(
+                                  R.string.player_speed_lock_release_hint,
+                                  formatSpeedLabel(lockedSpeedValue),
+                                ),
+                              )
+                            }
                           }
                         }
                       }
                       "speed_exit" -> {
-                        // Swipe-down is only meaningful when the playback is already in
-                        // the multiplier state. If the user is at the original speed and
-                        // just swipes down, there is nothing to exit — ignore the gesture.
+                        // Swipe-down is only meaningful when the playback was already in
+                        // the multiplier before this touch (or was swipe-locked during it).
+                        // At the original 1.0x speed there is nothing to exit, so the
+                        // swipe-down must not trigger any hint.
                         val inMultiplierState = speedEntered || originalSpeed > 1.001f
                         if (
                           isLongPressing &&
@@ -1012,8 +1035,9 @@ fun GestureHandler(
               hasSwipedEnough = false
               when {
                 speedExitRequested -> {
-                  // Swipe-down during the long-press requested an exit. Revert to 1.0x
-                  // (regardless of pre-touch state) and confirm.
+                  // Swipe-down during the long-press requested an exit from the
+                  // multiplier. Revert to 1.0x to actually leave the boosted state —
+                  // even if the player was already boosted before the touch began.
                   val currentSpeed = PlaybackSession.getPropertyFloat("speed") ?: multipleSpeedGesture
                   val targetSpeed = 1.0f
                   val steps = 5
@@ -1028,10 +1052,7 @@ fun GestureHandler(
                   }
                   viewModel.playerUpdate.update {
                     PlayerUpdates.ShowText(
-                      context.getString(
-                        R.string.player_speed_restored,
-                        formatSpeedLabel(1f),
-                      ),
+                      context.getString(R.string.player_speed_exited),
                     )
                   }
                 }
@@ -1049,8 +1070,9 @@ fun GestureHandler(
                   }
                 }
                 else -> {
-                  // Plain long-press release without a directional swipe: the speed
-                  // was never changed, so just clear the persistent guidance hint.
+                  // Plain long-press release without a directional swipe: revert the
+                  // boosted speed back to the pre-touch value and clear the hint.
+                  PlaybackSession.setPropertyFloat("speed", originalSpeed)
                   viewModel.playerUpdate.update { PlayerUpdates.None }
                 }
               }

@@ -958,6 +958,7 @@
   <string name="player_speed_lock_hint">上滑锁定%1$s播放</string>
   <string name="player_speed_exit_hint">下滑退出%1$s播放</string>
   <string name="player_speed_release_hint">松手退出%1$s播放</string>
+  <string name="player_speed_lock_release_hint">松手锁定%1$s倍数</string>
   <string name="player_speed_locked">已锁定 %1$s 播放</string>
   <string name="player_speed_restored">已恢复%1$s播放</string>
   <string name="player_speed_exited">已退出倍数播放</string>
