@@ -69,9 +69,7 @@ class WebDavClient(
           candidate.setCredentials(connection.username, connection.password)
         }
 
-        if (candidate.list(buildUrl("", trailingSlash = true), 0).isEmpty()) {
-          throw IOException("WebDAV base path returned no resources")
-        }
+        candidate.list(buildUrl("", trailingSlash = true), 0)
 
         sardine = candidate
         Result.success(Unit)
@@ -103,10 +101,17 @@ class WebDavClient(
 
         val files =
           resources
-            .filterNot { resource -> resource.path.trimEnd('/') == requestedWirePath }
+            .filterNot { resource ->
+              val resPath = resource.path?.trimEnd('/') ?: ""
+              resPath.equals(requestedWirePath, ignoreCase = true) ||
+                resource.name.isNullOrBlank() ||
+                resource.name.trimEnd('/') == "." ||
+                resource.name.trimEnd('/') == ".."
+            }
             .mapNotNull { resource: DavResource ->
-              val resourceName = resource.name?.trimEnd('/')?.takeIf(String::isNotBlank)
+              val rawName = resource.name?.trimEnd('/')?.takeIf(String::isNotBlank)
                 ?: return@mapNotNull null
+              val resourceName = runCatching { java.net.URLDecoder.decode(rawName, "UTF-8") }.getOrDefault(rawName)
               runCatching {
                 val filePath = directory.child(resourceName)
                 NetworkFile(
@@ -132,18 +137,32 @@ class WebDavClient(
     withContext(Dispatchers.IO) {
       try {
         val client = sardine ?: return@withContext Result.failure(IOException("Not connected"))
-        val resources = client.list(buildUrl(NetworkPath.from(path).value), 0)
-        val resource = resources.firstOrNull()
-        if (resource == null || resource.isDirectory) {
-          Result.failure(IOException("File not found or is a directory"))
-        } else {
+        val url = buildUrl(NetworkPath.from(path).value)
+        val resources = runCatching { client.list(url, 0) }.getOrNull()
+        val resource = resources?.firstOrNull()
+        if (resource != null && !resource.isDirectory) {
           val size = resource.contentLength
-          if (size == null || size < 0L) {
-            Result.failure(IOException("WebDAV server did not provide a file size"))
-          } else {
-            Result.success(size)
+          if (size != null && size >= 0L) {
+            return@withContext Result.success(size)
           }
         }
+
+        // Fallback: Use OkHttp HEAD request to fetch Content-Length
+        val requestBuilder = Request.Builder().url(url).head()
+        if (!connection.isAnonymous) {
+          requestBuilder.header("Authorization", Credentials.basic(connection.username, connection.password))
+        }
+        val response = rangeHttpClient.newCall(requestBuilder.build()).execute()
+        response.use { resp ->
+          if (resp.isSuccessful) {
+            val lengthHeader = resp.header("Content-Length")?.toLongOrNull()
+            if (lengthHeader != null && lengthHeader >= 0L) {
+              return@withContext Result.success(lengthHeader)
+            }
+          }
+        }
+
+        Result.failure(IOException("WebDAV server did not provide a file size"))
       } catch (cancellation: CancellationException) {
         throw cancellation
       } catch (error: Exception) {

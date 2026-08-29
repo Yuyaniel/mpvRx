@@ -4293,15 +4293,25 @@ class PlayerActivity :
       }
     }
 
-    if (
-      subtitlesPreferences.autoEnableSubtitles.get() &&
-      subtitlesPreferences.autoloadMatchingSubtitles.get()
-    ) {
+    if (subtitlesPreferences.autoloadMatchingSubtitles.get()) {
       lifecycleScope.launch {
         if (!PlaybackSession.isCurrentGeneration(loadGeneration)) return@launch
-        // For network files played via proxy (SMB/WebDAV/FTP), use the original network file path
-        val networkFilePath = loadedIntent.getStringExtra("network_file_path")
-        val networkConnectionId = loadedIntent.getLongExtra("network_connection_id", -1L)
+        val currentQueueItem =
+          PlaybackSession.queue.value.items.getOrNull(loadedPlaylistIndex)
+            ?: PlaybackSession.queue.value.currentItem
+        val persistedNetworkReference = currentUri?.let { NetworkPlaybackUri.parse(it.toString()) }
+        val networkFilePath =
+          persistedNetworkReference?.path?.value
+            ?: currentQueueItem?.networkSource?.relativePath
+            ?: networkPlaylistPaths.getOrNull(loadedPlaylistIndex)?.takeIf { it.isNotBlank() }
+            ?: loadedIntent.getStringExtra("network_file_path")
+        val networkConnectionId =
+          persistedNetworkReference?.connectionId
+            ?: currentQueueItem?.networkSource?.connectionId
+            ?: networkPlaylistConnectionId.takeIf { it != -1L }
+            ?: loadedIntent.getLongExtra("network_connection_id", -1L)
+
+        val autoSelect = subtitlesPreferences.autoEnableSubtitles.get()
 
         if (networkFilePath != null && networkConnectionId != -1L) {
           // Pass network file path and connection ID for subtitle discovery
@@ -4310,15 +4320,20 @@ class PlayerActivity :
             videoFileName = loadedFileName,
             networkConnectionId = networkConnectionId,
             expectedGeneration = loadGeneration,
+            autoSelect = autoSelect,
           )
         } else {
           // Regular file or direct network stream
-          val filePath = parsePathFromIntent(loadedIntent)
+          val filePath =
+            currentUri?.resolveLocalPath(this@PlayerActivity)
+              ?: parsePathFromIntent(loadedIntent)
+              ?: currentUri?.path
           if (filePath != null) {
             SubtitleOps.autoloadSubtitles(
               videoFilePath = filePath,
               videoFileName = loadedFileName,
               expectedGeneration = loadGeneration,
+              autoSelect = autoSelect,
             )
           }
         }
